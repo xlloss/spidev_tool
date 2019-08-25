@@ -25,6 +25,13 @@
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
+/**
+ * @brief Returns rx buffer size, considering the sequential mode
+ *
+ * @param a usual rx size (without sequential mode)
+ */
+#define RX_SIZE_SEQUENTIAL(a) (is_sequential_mode ? rx_buf_size : a)
+
 static void pabort(const char *s)
 {
     perror(s);
@@ -114,15 +121,14 @@ static int unescape(char *_dst, char *_src, size_t len)
     return ret;
 }
 
-//TODO: add sequential mode
-static void transfer(int fd, uint8_t const *tx, uint8_t const *rx, size_t len)
+static void transfer(int fd, uint8_t const *tx, uint8_t const *rx, size_t tx_len, size_t rx_len)
 {
     int ret;
     int out_fd;
     struct spi_ioc_transfer tr = {
         .tx_buf = (unsigned long)tx,
         .rx_buf = (unsigned long)rx,
-        .len = len,
+        .len = tx_len,
         .delay_usecs = delay,
         .speed_hz = speed,
         .bits_per_word = bits,
@@ -143,27 +149,45 @@ static void transfer(int fd, uint8_t const *tx, uint8_t const *rx, size_t len)
             tr.tx_buf = 0;
     }
 
+    if (is_sequential_mode)
+    {
+        tr.rx_buf = (unsigned long)NULL;
+
+        // tx transfer
+        ret = ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
+        if (ret < 1)
+            pabort("can't send spi message");
+
+        tr.tx_buf = (unsigned long)NULL;
+        tr.rx_buf = (unsigned long)rx;
+        tr.len = rx_len;
+
+        // skip rx length
+        rx += rx_skip;
+        rx_len -= rx_skip;
+    }
+
     ret = ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
     if (ret < 1)
         pabort("can't send spi message");
 
     if (verbose)
-        hex_dump(tx, len, 32, "TX");
+        hex_dump(tx, tx_len, 32, "TX");
 
     if (output_file) {
         out_fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (out_fd < 0)
             pabort("could not open output file");
 
-        ret = write(out_fd, rx, len);
-        if (ret != len)
+        ret = write(out_fd, rx, rx_len);
+        if (ret != rx_len)
             pabort("not all bytes written to output file");
 
         close(out_fd);
     }
 
     if (verbose)
-        hex_dump(rx, len, 32, "RX");
+        hex_dump(rx, rx_len, 32, "RX");
 }
 
 static void print_usage(const char *prog)
@@ -325,6 +349,7 @@ static void parse_opts(int argc, char *argv[])
 static void transfer_escaped_string(int fd, char *str)
 {
     size_t size = strlen(str);
+    size_t rx_size = RX_SIZE_SEQUENTIAL(size);
     uint8_t *tx;
     uint8_t *rx;
 
@@ -332,12 +357,12 @@ static void transfer_escaped_string(int fd, char *str)
     if (!tx)
         pabort("can't allocate tx buffer");
 
-    rx = malloc(size);
+    rx = malloc(rx_size);
     if (!rx)
         pabort("can't allocate rx buffer");
 
     size = unescape((char *)tx, str, size);
-    transfer(fd, tx, rx, size);
+    transfer(fd, tx, rx, size, rx_size);
     free(rx);
     free(tx);
 }
@@ -349,9 +374,12 @@ static void transfer_file(int fd, char *filename)
     int tx_fd;
     uint8_t *tx;
     uint8_t *rx;
+    size_t rx_size;
 
     if (stat(filename, &sb) == -1)
         pabort("can't stat input file");
+
+    rx_size = RX_SIZE_SEQUENTIAL(sb.st_size);
 
     tx_fd = open(filename, O_RDONLY);
     if (tx_fd < 0)
@@ -361,7 +389,7 @@ static void transfer_file(int fd, char *filename)
     if (!tx)
         pabort("can't allocate tx buffer");
 
-    rx = malloc(sb.st_size);
+    rx = malloc(rx_size);
     if (!rx)
         pabort("can't allocate rx buffer");
 
@@ -369,7 +397,7 @@ static void transfer_file(int fd, char *filename)
     if (bytes != sb.st_size)
         pabort("failed to read input file");
 
-    transfer(fd, tx, rx, sb.st_size);
+    transfer(fd, tx, rx, sb.st_size, rx_size);
     free(rx);
     free(tx);
     close(tx_fd);
@@ -397,6 +425,7 @@ static void transfer_buf(int fd, int len)
     uint8_t *tx;
     uint8_t *rx;
     int i;
+    size_t rx_len = RX_SIZE_SEQUENTIAL(len);
 
     tx = malloc(len);
     if (!tx)
@@ -404,14 +433,14 @@ static void transfer_buf(int fd, int len)
     for (i = 0; i < len; i++)
         tx[i] = random();
 
-    rx = malloc(len);
+    rx = malloc(rx_len);
     if (!rx)
         pabort("can't allocate rx buffer");
 
-    transfer(fd, tx, rx, len);
+    transfer(fd, tx, rx, len, rx_len);
 
     _write_count += len;
-    _read_count += len;
+    _read_count += rx_len;
 
     if (mode & SPI_LOOP) {
         if (memcmp(tx, rx, len)) {
@@ -482,6 +511,16 @@ int main(int argc, char *argv[])
     if (input_tx && input_file)
         pabort("only one of -p and --input may be selected");
 
+    if ((mode & SPI_LOOP) && is_sequential_mode)
+    {
+        pabort("Sequential mode cannot work with loop mode in one time");
+    }
+
+    if (rx_buf_size < rx_skip)
+    {
+        pabort("RX buffer must not be less RX bytes to skip");
+    }
+
     if (input_tx)
         transfer_escaped_string(fd, input_tx);
     else if (input_file)
@@ -504,8 +543,18 @@ int main(int argc, char *argv[])
         }
         printf("total: tx %.1fKB, rx %.1fKB\n",
                _write_count/1024.0, _read_count/1024.0);
+    } else if (is_sequential_mode)
+    {
+        size_t rx_size = rx_buf_size;
+        uint8_t* rx_buf = malloc(rx_size);
+        if (!rx_buf)
+        {
+            pabort("Cannot malloc rx buffer");
+        }
+        transfer(fd, default_tx, rx_buf, sizeof(default_tx), rx_size);
+        free(rx_buf);
     } else
-        transfer(fd, default_tx, default_rx, sizeof(default_tx));
+        transfer(fd, default_tx, default_rx, sizeof(default_tx), sizeof(default_rx));
 
     close(fd);
 
