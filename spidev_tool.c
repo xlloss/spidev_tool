@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <unistd.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,9 @@ static int verbose;
 static int transfer_size;
 static int iterations;
 static int interval = 5; /* interval in seconds for showing transfer rate */
+static bool is_sequential_mode = false;
+static int rx_buf_size = 0;
+static int rx_skip = 0;
 
 uint8_t default_tx[] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -110,6 +114,7 @@ static int unescape(char *_dst, char *_src, size_t len)
     return ret;
 }
 
+//TODO: add sequential mode
 static void transfer(int fd, uint8_t const *tx, uint8_t const *rx, size_t len)
 {
     int ret;
@@ -170,6 +175,19 @@ static void print_usage(const char *prog)
          "  -b --bpw      bits per word\n"
          "  -i --input    input data from a file (e.g. \"test.bin\")\n"
          "  -o --output   output data to a file (e.g. \"results.bin\")\n"
+         "  -e --sequent  sequential tx-rx transaction.\n"
+         "                  Format: A[:B]\n"
+         "                  where A - bytes to wait information\n"
+         "                            (must be not less than B)\n"
+         "                        B - bytes to skip before receiving\n"
+         "                            (default 0)\n"
+         "                  E.g.:\n"
+         "                    \"4\" - program sends input and receive 4 bytes.\n"
+         "                            Output (RX) will be 4 bytes\n"
+         "                      or\n"
+         "                    \"3:2\" - program sends input and receive 3 bytes.\n"
+         "                              Output (RX) will be 1 byte, because of\n"
+         "                              skipping first 2\n"
          "  -l --loop     loopback\n"
          "  -H --cpha     clock phase\n"
          "  -O --cpol     clock polarity\n"
@@ -197,6 +215,7 @@ static void parse_opts(int argc, char *argv[])
             { "bpw",     1, 0, 'b' },
             { "input",   1, 0, 'i' },
             { "output",  1, 0, 'o' },
+            { "sequent", 1, 0, 'e' },
             { "loop",    0, 0, 'l' },
             { "cpha",    0, 0, 'H' },
             { "cpol",    0, 0, 'O' },
@@ -214,7 +233,7 @@ static void parse_opts(int argc, char *argv[])
         };
         int c;
 
-        c = getopt_long(argc, argv, "D:s:d:b:i:o:lHOLC3NR24p:vS:I:",
+        c = getopt_long(argc, argv, "D:s:d:b:i:o:e:lHOLC3NR24p:vS:I:",
                 lopts, NULL);
 
         if (c == -1)
@@ -238,6 +257,15 @@ static void parse_opts(int argc, char *argv[])
             break;
         case 'o':
             output_file = optarg;
+            break;
+        case 'e':
+            is_sequential_mode = true;
+            rx_buf_size = atoi(optarg);
+            char* second_arg_start_ptr = strchr(optarg, ':');
+            if (second_arg_start_ptr != NULL)
+            {
+                rx_skip = atoi(second_arg_start_ptr + 1);
+            }
             break;
         case 'l':
             mode |= SPI_LOOP;
@@ -445,6 +473,11 @@ int main(int argc, char *argv[])
     printf("spi mode: 0x%x\n", mode);
     printf("bits per word: %d\n", bits);
     printf("max speed: %d Hz (%d KHz)\n", speed, speed/1000);
+    if (is_sequential_mode)
+    {
+        printf("sequential mode: skip %d bytes, then receive and print %d " \
+            "bytes\n", rx_skip, rx_buf_size - rx_skip);
+    }
 
     if (input_tx && input_file)
         pabort("only one of -p and --input may be selected");
