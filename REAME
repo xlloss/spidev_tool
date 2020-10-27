@@ -1,0 +1,40 @@
+Test for W25Q128
+
+
+root@imx8mpevk:~# ./spdev_tool -D /dev/spidev0.0 -N -s 10000 -e 2 -p "\x9f" -v -d 500
+spi mode: 0x40
+bits per word: 8
+max speed: 10000 Hz (10 KHz)
+sequential mode: skip 0 bytes, then receive and print 2 bytes
+TX | 9F __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __  |.|
+RX | EF 17 __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __  |..|
+
+
+DTS:
+
+&ecspi2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	fsl,spi-num-chipselects = <1>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_ecspi2 &pinctrl_ecspi2_cs>;
+	cs-gpios = <&gpio5 13 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+	spidev1: spi@0 {
+		status = "okay";
+		reg = <0>;
+		compatible = "rohm,dh2228fv";
+		spi-max-frequency = <10000>;
+	};
+
+	flash1: w25q128@0 {
+		status = "disabled";
+		reg = <0>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		spi-max-frequency = <10000>;
+	};
+};
+
